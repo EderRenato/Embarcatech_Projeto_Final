@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "ws2818b.pio.h"
@@ -7,7 +8,6 @@
 #include "hardware/i2c.h"
 #include "hardware/pwm.h"
 #include "hardware/adc.h"
-#include "hardware/watchdog.h"
 
 #define LED_COUNT 25                // Numero de leds da matriz
 #define MATRIX_PIN 7                // Pino da matriz de LEDs
@@ -15,6 +15,9 @@
 #define DISPLAY_SDA 14              // Pino do SDA
 #define DISPLAY_SCL 15              // Pino do SCL
 #define ENDERECO 0x3C
+#define DIVISOR_CLOCK_PWM 125.0f
+#define VALOR_WRAP_PWM 1000
+
 const uint GREEN_LED = 11;
 const uint BLUE_LED = 12;
 const uint RED_LED = 13;
@@ -25,19 +28,18 @@ const uint BUZZER_B = 10;
 const uint BUTTON_A = 5;
 const uint BUTTON_B = 6;
 const uint DEBOUNCE_DELAY = 150;   // Tempo de debounce para os botões
-const uint FREQUENCY = 50;   // Frequência do PWM
-const uint WRAP = (1000000 / FREQUENCY);  // Período em microssegundos
+bool alarme_ativo = false; // Indica se o alarme está ativo
+uint32_t alarme_inicio = 0; // Tempo de início do alarme
+const uint32_t ALARME_DURACAO_MS = 1000; // Duração do alarme em milissegundos
 
-uint NIVEL_VIBRACAO = 0;
-uint INCLINACAO = 0;
-uint CARGA = 0;
-uint NIVEL_ALERTA = 0;
-bool CALIBRADO = false;
+uint UMIDADE = 0;
+uint PH = 0;
+uint modo = 0; // modo de operação 'Hortaliças', 1 para 'Cactus', 2 para 'orquidea'
+bool irrigacao = false;
 
-const int LIMITE_VIBRACAO_LEVE = 30;
-const int LIMITE_VIBRACAO_MODERADO = 60;
-const int LIMITE_INCLINACAO = 70;
-const int LIMITE_CARGA = 80;
+uint UMIDADE_MIN[3] = {40, 10, 60};
+float PH_MIN[3] = {6.0, 5.5, 5.0};
+float PH_MAX[3] = {7.0, 6.5, 6.0};
 
 ssd1306_t ssd; // Inicialização a estrutura do display
 
@@ -61,61 +63,101 @@ void npSetLED(const uint index, const uint8_t r, const uint8_t g, const uint8_t 
 void npClear();
 // Função para atualizar os LEDs no hardware
 void npWrite();
-
 void init_buzzer_pwm(uint gpio); // funcção para inicializar os buzzers como pwm
 void init_led_pwm(uint gpio); // função para inicializar os leds como pwm
-
+uint16_t read_adc(uint channel); // leitura do adc
 void set_buzzer_tone(uint gpio, uint freq);
-void stop_buzzer(uint gpio);
+void stop_pwm(uint gpio);
 void set_led_pulse(uint gpio, uint16_t percentage); // envio de dados do pwm
 void reset();
-void buttons_callback(uint gpio, uint32_t events){
-    static uint32_t button_a_last_time = 0;
-    static uint32_t button_b_last_time = 0;
-    uint32_t current_time = to_ms_since_boot(get_absolute_time());
-
-    if (gpio == BUTTON_A) {
-        if (current_time - button_a_last_time > DEBOUNCE_DELAY) {
-            button_a_last_time = current_time;
-            stop_buzzer(BUZZER_A);
-            stop_buzzer(BUZZER_B);
-        }
-    } else if (gpio == BUTTON_B) {
-        if (current_time - button_b_last_time > DEBOUNCE_DELAY) {
-            button_b_last_time = current_time;
-            reset();
-        }
-    }
-}
+void buttons_callback(uint gpio, uint32_t events);
 void display_init(); //função para inicializar o display
 void init_hardware(); //função para inicializar todos os componentes
-
+void alarm(); //função para acionar o alarme
+void modo_de_operacao(); //função para exibir a barra de progresso de irrigacao
 int main()
 {
     stdio_init_all();
     init_hardware();
     gpio_set_irq_enabled_with_callback(BUTTON_A, GPIO_IRQ_EDGE_FALL, true, buttons_callback);
     gpio_set_irq_enabled(BUTTON_B, GPIO_IRQ_EDGE_FALL, true);
+    bool cor = true;
     while (true) {
-        set_led_pulse(GREEN_LED, 10);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 20);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 30);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 40);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 50);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 60);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 70);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 80);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 90);
-        sleep_ms(100);
-        set_led_pulse(GREEN_LED, 100);
+        UMIDADE = read_adc(Y_AXIS);
+        PH = read_adc(X_AXIS);
+        UMIDADE = (UMIDADE * 100) / 4095;
+        PH = (PH * 14) / 4095;
+
+        if (alarme_ativo && (to_ms_since_boot(get_absolute_time()) - alarme_inicio) >= ALARME_DURACAO_MS) {
+            alarme_ativo = false;
+            stop_pwm(RED_LED);
+            stop_pwm(GREEN_LED);
+            stop_pwm(BLUE_LED);
+            stop_pwm(BUZZER_A);
+            stop_pwm(BUZZER_B);
+        }
+        // Limpa o display
+        ssd1306_fill(&ssd, false);
+            // Exibe o valor da umidade
+        char umidade_str[20];
+        snprintf(umidade_str, sizeof(umidade_str), "Umidade: %u%%", UMIDADE);
+        ssd1306_draw_string(&ssd, umidade_str, 10, 0);
+
+        // Exibe o valor do pH
+        char ph_str[20];
+        snprintf(ph_str, sizeof(ph_str), "pH: %.1f", (float)PH);
+        ssd1306_draw_string(&ssd, ph_str, 10, 10);
+        
+        // Exibe o modo atual
+        char modo_str[20];
+        const char *modos[] = {"Hortalicas", "Cactus", "Orquidea"};
+        snprintf(modo_str, sizeof(modo_str), "Modo: %s", modos[modo]);
+        ssd1306_draw_string(&ssd, modo_str, 10, 20);
+
+        // Exibe o status da irrigação
+        if (irrigacao) {
+            ssd1306_draw_string(&ssd, "Irrigando...", 10, 50);
+        } else {
+            ssd1306_draw_string(&ssd, "Irrigacao OK", 10, 50);
+        }
+
+        // Verifica e exibe alertas de pH
+        if (PH < PH_MIN[modo]) {
+            alarm();
+            ssd1306_draw_string(&ssd, "pH baixo Ajuste pH", 10, 40);
+        } else if (PH > PH_MAX[modo]) {
+            alarm();
+            ssd1306_draw_string(&ssd, "pH alto Ajuste pH", 10, 40);
+        } else {
+            ssd1306_draw_string(&ssd, "pH ok!", 10, 40);
+        }
+
+        // Atualiza o display uma única vez
+        ssd1306_send_data(&ssd);
+        if (UMIDADE < UMIDADE_MIN[modo]) {
+            set_led_pulse(RED_LED, 100-UMIDADE);
+            stop_pwm(GREEN_LED);
+            stop_pwm(BLUE_LED);
+        } else if(UMIDADE < UMIDADE_MIN[modo] + 20) {
+            set_led_pulse(RED_LED, 100-UMIDADE);
+            set_led_pulse(GREEN_LED, 100-UMIDADE);
+            stop_pwm(BLUE_LED);
+        } else if (UMIDADE < UMIDADE_MIN[modo] + 35) {
+            stop_pwm(RED_LED);
+            set_led_pulse(GREEN_LED, 100-UMIDADE);
+            set_led_pulse(BLUE_LED, UMIDADE);
+        } else {
+            stop_pwm(GREEN_LED);
+            set_led_pulse(BLUE_LED, UMIDADE);
+        }
+        // Controle de irrigação
+        if (!irrigacao && UMIDADE < UMIDADE_MIN[modo]) {
+            alarm();
+            irrigacao = true;
+        }else if(irrigacao && UMIDADE == UMIDADE_MIN[modo]+40) {
+            irrigacao = false;
+        }
+        modo_de_operacao();
         sleep_ms(100);
     }
 }
@@ -162,6 +204,7 @@ void npClear() {
     npWrite();                                            // Atualizar LEDs no hardware
 }
 
+
 void npWrite() {
     for (uint i = 0; i < LED_COUNT; ++i) {                // Iterar sobre todos os LEDs
         pio_sm_put_blocking(np_pio, sm, leds[i].G);       // Enviar componente verde
@@ -170,15 +213,13 @@ void npWrite() {
     }
 }
 
-void init_buzzer_pwm(uint gpio) {
-    gpio_set_function(gpio, GPIO_FUNC_PWM); // Configura o GPIO como PWM
+void init_pwm(uint gpio, float clkdiv, uint wrap) {
+    gpio_set_function(gpio, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(gpio);
-    pwm_set_clkdiv(slice_num, 125.0f);     // Define o divisor do clock para 1 MHz
-    pwm_set_wrap(slice_num, 1000);        // Define o TOP para frequência de 1 kHz
-    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), 0); // Razão cíclica inicial
-    pwm_set_enabled(slice_num, true);     // Habilita o PWM
+    pwm_set_clkdiv(slice_num, clkdiv);
+    pwm_set_wrap(slice_num, wrap);
+    pwm_set_enabled(slice_num, true);
 }
-
 void set_buzzer_tone(uint gpio, uint freq) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
     uint top = 1000000 / freq;            // Calcula o TOP para a frequência desejada
@@ -186,14 +227,9 @@ void set_buzzer_tone(uint gpio, uint freq) {
     pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / 2); // 50% duty cycle
 }
 
-void stop_buzzer(uint gpio) {
+void stop_pwm(uint gpio) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
     pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), 0); // Desliga o PWM
-}
-void set_led_pulse(uint gpio, uint16_t percentage) {
-    uint slice_num = pwm_gpio_to_slice_num(gpio);
-    uint16_t level = (uint16_t)((WRAP * percentage) / 100);  // Converte 0-100% para 0-WRAP
-    pwm_set_gpio_level(gpio, level);
 }
 void init_hardware(){
     adc_init(); // inicia o adc
@@ -205,9 +241,9 @@ void init_hardware(){
     gpio_set_dir(RED_LED, GPIO_OUT);
     gpio_set_dir(BLUE_LED, GPIO_OUT);
     gpio_set_dir(GREEN_LED, GPIO_OUT);
-    init_led_pwm(RED_LED);
-    init_led_pwm(BLUE_LED);
-    init_led_pwm(GREEN_LED);
+    init_pwm(RED_LED, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
+    init_pwm(BLUE_LED, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
+    init_pwm(GREEN_LED, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
     //configuração dos botões
     gpio_init(BUTTON_A);
     gpio_set_dir(BUTTON_A, GPIO_IN);
@@ -223,11 +259,13 @@ void init_hardware(){
     gpio_set_function(DISPLAY_SCL, GPIO_FUNC_I2C);
     gpio_pull_up(DISPLAY_SDA);
     gpio_pull_up(DISPLAY_SCL);
+    display_init();
     //Inicia a matriz de led
     npInit(MATRIX_PIN);
-    display_init();
-    init_buzzer_pwm(BUZZER_A);
-    init_buzzer_pwm(BUZZER_B);
+    npClear();
+    npWrite();
+    init_pwm(BUZZER_A, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
+    init_pwm(BUZZER_B, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
 }
 void display_init(){
     ssd1306_init(&ssd, WIDTH, HEIGHT, false, ENDERECO, I2C_PORT); // Inicialização do display
@@ -237,13 +275,78 @@ void display_init(){
     ssd1306_fill(&ssd, false); // limpa o display
     ssd1306_send_data(&ssd);
 }
-void reset(){
-    watchdog_reboot(0, 0, 0);
-}
-void init_led_pwm(uint gpio) {
-    gpio_set_function(gpio, GPIO_FUNC_PWM);
+void set_led_pulse(uint gpio, uint16_t percentage) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
-    pwm_set_wrap(slice_num, WRAP);
-    pwm_set_clkdiv(slice_num, 125.0f); // Divisor de clock para 1 MHz
-    pwm_set_enabled(slice_num, true);
+    uint16_t level = (uint16_t)((VALOR_WRAP_PWM * percentage) / 100);  // Converte 0-100% para 0-WRAP
+    printf("Level: %u \nPorcentagem: %u\n", level, percentage);  // Depuração
+    pwm_set_gpio_level(gpio, level);
 }
+uint16_t read_adc(uint channel) {
+    if (channel < 26 || channel > 28) return 0; // Verifica se o canal é válido
+    adc_select_input(channel - 26); // Ajusta o canal (26 → 0, 27 → 1, 28 → 2)
+    uint32_t sum = 0;
+    const int samples = 10;  // Coleta 10 amostras e faz a média
+    for (int i = 0; i < samples; i++) {
+        sum += adc_read();
+        sleep_us(500);  // Pequeno atraso para suavizar leituras
+    }
+    return sum / samples;
+}
+void buttons_callback(uint gpio, uint32_t events){
+    static uint32_t button_a_last_time = 0;
+    static uint32_t button_b_last_time = 0;
+    uint32_t current_time = to_ms_since_boot(get_absolute_time());
+    if (gpio == BUTTON_A && (current_time - button_a_last_time) > DEBOUNCE_DELAY) {
+        button_a_last_time = current_time;
+        modo = (modo + 1) % 3; // Alterna entre 0, 1 e 2
+    } else if (gpio == BUTTON_B && (current_time - button_b_last_time) > DEBOUNCE_DELAY) {
+        button_b_last_time = current_time;
+        stop_pwm(BLUE_LED);
+        irrigacao = false; // Reseta o estado da irrigação
+    }
+}
+void alarm() {
+    if (!alarme_ativo) {
+        alarme_ativo = true;
+        alarme_inicio = to_ms_since_boot(get_absolute_time());
+
+        // Ativa o buzzer e os LEDs
+        set_buzzer_tone(BUZZER_A, 1000);
+        set_buzzer_tone(BUZZER_B, 1000);
+        set_led_pulse(RED_LED, 100);
+        set_led_pulse(GREEN_LED, 100);
+        set_led_pulse(BLUE_LED, 100);
+    }
+}
+void modo_de_operacao() {
+    int matriz[3][5][5][3] = {
+        {
+            {{0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}, {18, 131, 0}},
+            {{0, 0, 0}, {0, 0, 0}, {255, 178, 0}, {255, 178, 0}, {0, 0, 0}},
+            {{0, 0, 0}, {255, 178, 0}, {255, 178, 0}, {255, 178, 0}, {0, 0, 0}},
+            {{255, 178, 0}, {255, 178, 0}, {255, 178, 0}, {0, 0, 0}, {0, 0, 0}},
+            {{255, 178, 0}, {255, 178, 0}, {0, 0, 0}, {0, 0, 0}, {0, 0, 0}}
+        },
+        {
+            {{18, 131, 0}, {0, 0, 0}, {18, 131, 0}, {0, 0, 0}, {18, 131, 0}},
+            {{18, 131, 0}, {0, 0, 0}, {18, 131, 0}, {0, 0, 0}, {18, 131, 0}},
+            {{18, 131, 0}, {18, 131, 0}, {18, 131, 0}, {0, 0, 0}, {18, 131, 0}},
+            {{0, 0, 0}, {0, 0, 0}, {18, 131, 0}, {18, 131, 0}, {18, 131, 0}},
+            {{0, 0, 0}, {0, 0, 0}, {18, 131, 0}, {0, 0, 0}, {0, 0, 0}}
+        },
+        {
+            {{0, 0, 0}, {138, 0, 211}, {138, 0, 211}, {138, 0, 211}, {0, 0, 0}},
+            {{138, 0, 211}, {255, 50, 246}, {255, 50, 246}, {255, 50, 246}, {138, 0, 211}},
+            {{138, 0, 211}, {255, 50, 246}, {165, 162, 0}, {255, 50, 246}, {138, 0, 211}},
+            {{138, 0, 211}, {255, 50, 246}, {255, 50, 246}, {255, 50, 246}, {138, 0, 211}},
+            {{0, 0, 0}, {138, 0, 211}, {138, 0, 211}, {138, 0, 211}, {0, 0, 0}}
+        }};
+    for (int linha = 0; linha < 5; linha++) {
+        for (int coluna = 0; coluna < 5; coluna++) {
+            int posicao = getIndex(linha, coluna);
+            npSetLED(posicao, matriz[modo][coluna][linha][0], matriz[modo][coluna][linha][1], matriz[modo][coluna][linha][2]);
+        }
+    }
+    npWrite(); // Atualizar LEDs no hardware
+}
+
