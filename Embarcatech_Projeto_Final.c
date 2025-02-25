@@ -14,36 +14,36 @@
 #define I2C_PORT i2c1               // Porta i2c1
 #define DISPLAY_SDA 14              // Pino do SDA
 #define DISPLAY_SCL 15              // Pino do SCL
-#define ENDERECO 0x3C
-#define DIVISOR_CLOCK_PWM 125.0f
-#define VALOR_WRAP_PWM 1000
+#define ENDERECO 0x3C               // Endereço do display
+#define DIVISOR_CLOCK_PWM 125.0f    // Divisor do clock do pwm
+#define VALOR_WRAP_PWM 1000         // Valor do wrap do pwm
 
-const uint GREEN_LED = 11;
-const uint BLUE_LED = 12;
-const uint RED_LED = 13;
+const uint GREEN_LED = 11;          // Pino do led verde
+const uint BLUE_LED = 12;           // Pino do led azul
+const uint RED_LED = 13;            // Pino do led vermelho
 const uint X_AXIS = 26;             //eixo x do joystick
 const uint Y_AXIS = 27;             //eixo y do joystick
-const uint BUZZER_A = 21;
-const uint BUZZER_B = 10;
-const uint BUTTON_A = 5;
-const uint BUTTON_B = 6;
+const uint BUZZER_A = 21;           // Pino do buzzer A
+const uint BUZZER_B = 10;           // Pino do buzzer B
+const uint BUTTON_A = 5;            // Pino do botão A
+const uint BUTTON_B = 6;            // Pino do botão B
 const uint DEBOUNCE_DELAY = 150;   // Tempo de debounce para os botões
 bool alarme_ativo = false; // Indica se o alarme está ativo
 uint32_t alarme_inicio = 0; // Tempo de início do alarme
 const uint32_t ALARME_DURACAO_MS = 1000; // Duração do alarme em milissegundos
 
-uint UMIDADE = 0;
-uint PH = 0;
+uint UMIDADE = 0; // Variável para armazenar a umidade
+uint PH = 0; // Variavel para armazenar o ph
 uint modo = 0; // modo de operação 'Hortaliças', 1 para 'Cactus', 2 para 'orquidea'
-bool irrigacao = false;
+bool irrigacao = false; // Variavel para armazenar o estado da irrigação
 
-uint UMIDADE_MIN[3] = {40, 10, 60};
-float PH_MIN[3] = {6.0, 5.5, 5.0};
-float PH_MAX[3] = {7.0, 6.5, 6.0};
+uint UMIDADE_MIN[3] = {40, 10, 60}; // Umidade minima para os três modos de funcionamento
+float PH_MIN[3] = {6.0, 5.5, 5.0}; // pH minimo para os três modos
+float PH_MAX[3] = {7.0, 6.5, 6.0}; // pH maximo para os tres modos
 
 ssd1306_t ssd; // Inicialização a estrutura do display
 
-struct pixel_t {
+struct pixel_t { 
     uint8_t G, R, B;        // Componentes de cor: Verde, Vermelho e Azul
 };
 
@@ -63,25 +63,35 @@ void npSetLED(const uint index, const uint8_t r, const uint8_t g, const uint8_t 
 void npClear();
 // Função para atualizar os LEDs no hardware
 void npWrite();
-void init_buzzer_pwm(uint gpio); // funcção para inicializar os buzzers como pwm
-void init_led_pwm(uint gpio); // função para inicializar os leds como pwm
-uint16_t read_adc(uint channel); // leitura do adc
+// funcção para inicializar os buzzers como pwm
+void init_buzzer_pwm(uint gpio); 
+// função para inicializar os leds como pwm
+void init_led_pwm(uint gpio); 
+// leitura do adc
+uint16_t read_adc(uint channel); 
+// Configures the buzzer to emit a tone at the specified frequency.
 void set_buzzer_tone(uint gpio, uint freq);
+// Para o pwm
 void stop_pwm(uint gpio);
-void set_led_pulse(uint gpio, uint16_t percentage); // envio de dados do pwm
-void reset();
+// envio de dados do pwm para o led
+void set_led_pulse(uint gpio, uint16_t percentage);
+// função de interrupção dos botões
 void buttons_callback(uint gpio, uint32_t events);
-void display_init(); //função para inicializar o display
-void init_hardware(); //função para inicializar todos os componentes
-void alarm(); //função para acionar o alarme
-void modo_de_operacao(); //função para exibir a barra de progresso de irrigacao
+//função para inicializar o display
+void display_init();
+//função para inicializar todos os componentes
+void init_hardware();
+//função para acionar o alarme
+void alarm(); 
+//função para exibir a barra de progresso de irrigacao
+void modo_de_operacao();
+
 int main()
 {
     stdio_init_all();
     init_hardware();
     gpio_set_irq_enabled_with_callback(BUTTON_A, GPIO_IRQ_EDGE_FALL, true, buttons_callback);
     gpio_set_irq_enabled(BUTTON_B, GPIO_IRQ_EDGE_FALL, true);
-    bool cor = true;
     while (true) {
         UMIDADE = read_adc(Y_AXIS);
         PH = read_adc(X_AXIS);
@@ -89,6 +99,7 @@ int main()
         PH = (PH * 14) / 4095;
 
         if (alarme_ativo && (to_ms_since_boot(get_absolute_time()) - alarme_inicio) >= ALARME_DURACAO_MS) {
+            //desativa o alarme se já tiver passado mais que 1 segundo
             alarme_ativo = false;
             stop_pwm(RED_LED);
             stop_pwm(GREEN_LED);
@@ -98,29 +109,25 @@ int main()
         }
         // Limpa o display
         ssd1306_fill(&ssd, false);
-            // Exibe o valor da umidade
+        // Exibe o valor da umidade
         char umidade_str[20];
         snprintf(umidade_str, sizeof(umidade_str), "Umidade: %u%%", UMIDADE);
         ssd1306_draw_string(&ssd, umidade_str, 10, 0);
-
         // Exibe o valor do pH
         char ph_str[20];
         snprintf(ph_str, sizeof(ph_str), "pH: %.1f", (float)PH);
         ssd1306_draw_string(&ssd, ph_str, 10, 10);
-        
         // Exibe o modo atual
         char modo_str[20];
         const char *modos[] = {"Hortalicas", "Cactus", "Orquidea"};
         snprintf(modo_str, sizeof(modo_str), "Modo: %s", modos[modo]);
         ssd1306_draw_string(&ssd, modo_str, 10, 20);
-
         // Exibe o status da irrigação
         if (irrigacao) {
             ssd1306_draw_string(&ssd, "Irrigando...", 10, 50);
         } else {
             ssd1306_draw_string(&ssd, "Irrigacao OK", 10, 50);
         }
-
         // Verifica e exibe alertas de pH
         if (PH < PH_MIN[modo]) {
             alarm();
@@ -131,9 +138,9 @@ int main()
         } else {
             ssd1306_draw_string(&ssd, "pH ok!", 10, 40);
         }
-
         // Atualiza o display uma única vez
         ssd1306_send_data(&ssd);
+        // Altera os leds rgb de acordo com o nivel de umidade
         if (UMIDADE < UMIDADE_MIN[modo]) {
             set_led_pulse(RED_LED, 100-UMIDADE);
             stop_pwm(GREEN_LED);
@@ -157,10 +164,13 @@ int main()
         }else if(irrigacao && UMIDADE == UMIDADE_MIN[modo]+40) {
             irrigacao = false;
         }
+        // mostra na matriz de led o modo de operação
         modo_de_operacao();
+        // aguarda 100ms antes de rodar o loop novamente
         sleep_ms(100);
     }
 }
+
 
 int getIndex(int x, int y) {
     x = 4 - x; // Inverte as colunas (0 -> 4, 1 -> 3, etc.)
@@ -171,7 +181,6 @@ int getIndex(int x, int y) {
         return y * 5 + (4 - x); // Linha ímpar (direita para esquerda)
     }
 }
-
 void npInit(uint pin) {
     uint offset = pio_add_program(pio0, &ws2818b_program); // Carregar o programa PIO
     np_pio = pio0;                                         // Usar o primeiro bloco PIO
@@ -190,21 +199,17 @@ void npInit(uint pin) {
         leds[i].B = 0;
     }
 }
-
 void npSetLED(const uint index, const uint8_t r, const uint8_t g, const uint8_t b) {
     leds[index].R = r;                                    // Definir componente vermelho
     leds[index].G = g;                                    // Definir componente verde
     leds[index].B = b;                                    // Definir componente azul
 }
-
 void npClear() {
     for (uint i = 0; i < LED_COUNT; ++i) {                // Iterar sobre todos os LEDs
         npSetLED(i, 0, 0, 0);                             // Definir cor como preta (apagado)
     }
     npWrite();                                            // Atualizar LEDs no hardware
 }
-
-
 void npWrite() {
     for (uint i = 0; i < LED_COUNT; ++i) {                // Iterar sobre todos os LEDs
         pio_sm_put_blocking(np_pio, sm, leds[i].G);       // Enviar componente verde
@@ -212,7 +217,6 @@ void npWrite() {
         pio_sm_put_blocking(np_pio, sm, leds[i].B);       // Enviar componente azul
     }
 }
-
 void init_pwm(uint gpio, float clkdiv, uint wrap) {
     gpio_set_function(gpio, GPIO_FUNC_PWM);
     uint slice_num = pwm_gpio_to_slice_num(gpio);
@@ -226,7 +230,6 @@ void set_buzzer_tone(uint gpio, uint freq) {
     pwm_set_wrap(slice_num, top);
     pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / 2); // 50% duty cycle
 }
-
 void stop_pwm(uint gpio) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
     pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), 0); // Desliga o PWM
@@ -264,6 +267,7 @@ void init_hardware(){
     npInit(MATRIX_PIN);
     npClear();
     npWrite();
+    // Inicia os buzzers
     init_pwm(BUZZER_A, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
     init_pwm(BUZZER_B, DIVISOR_CLOCK_PWM, VALOR_WRAP_PWM);
 }
@@ -349,4 +353,3 @@ void modo_de_operacao() {
     }
     npWrite(); // Atualizar LEDs no hardware
 }
-
