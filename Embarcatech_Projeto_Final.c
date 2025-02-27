@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <math.h>
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "ws2818b.pio.h"
@@ -28,18 +27,17 @@ const uint BUZZER_B = 10;           // Pino do buzzer B
 const uint BUTTON_A = 5;            // Pino do botão A
 const uint BUTTON_B = 6;            // Pino do botão B
 const uint DEBOUNCE_DELAY = 150;   // Tempo de debounce para os botões
+const uint32_t ALARME_DURACAO_MS = 1000; // Duração do alarme em milissegundos
+const uint UMIDADE_MIN[3] = {40, 10, 60}; // Umidade minima para os três modos de funcionamento
+const float PH_MIN[3] = {6.0, 5.5, 5.0}; // pH minimo para os três modos
+const float PH_MAX[3] = {7.0, 6.5, 6.0}; // pH maximo para os tres modos
+
 bool alarme_ativo = false; // Indica se o alarme está ativo
 uint32_t alarme_inicio = 0; // Tempo de início do alarme
-const uint32_t ALARME_DURACAO_MS = 1000; // Duração do alarme em milissegundos
-
 uint UMIDADE = 0; // Variável para armazenar a umidade
 uint PH = 0; // Variavel para armazenar o ph
 uint modo = 0; // modo de operação 'Hortaliças', 1 para 'Cactus', 2 para 'orquidea'
 bool irrigacao = false; // Variavel para armazenar o estado da irrigação
-
-uint UMIDADE_MIN[3] = {40, 10, 60}; // Umidade minima para os três modos de funcionamento
-float PH_MIN[3] = {6.0, 5.5, 5.0}; // pH minimo para os três modos
-float PH_MAX[3] = {7.0, 6.5, 6.0}; // pH maximo para os tres modos
 
 ssd1306_t ssd; // Inicialização a estrutura do display
 
@@ -63,14 +61,12 @@ void npSetLED(const uint index, const uint8_t r, const uint8_t g, const uint8_t 
 void npClear();
 // Função para atualizar os LEDs no hardware
 void npWrite();
-// funcção para inicializar os buzzers como pwm
-void init_buzzer_pwm(uint gpio); 
-// função para inicializar os leds como pwm
-void init_led_pwm(uint gpio); 
+// funcção para inicializar os pwm
+void init_pwm(uint gpio, float clkdiv, uint wrap); 
 // leitura do adc
 uint16_t read_adc(uint channel); 
 // Configures the buzzer to emit a tone at the specified frequency.
-void set_buzzer_tone(uint gpio, uint freq);
+void set_buzzer_tone(uint gpio, uint freq, uint volume);
 // Para o pwm
 void stop_pwm(uint gpio);
 // envio de dados do pwm para o led
@@ -161,9 +157,10 @@ int main()
         if (!irrigacao && UMIDADE < UMIDADE_MIN[modo]) {
             alarm();
             irrigacao = true;
-        }else if(irrigacao && UMIDADE == UMIDADE_MIN[modo]+40) {
+        }else if(irrigacao && UMIDADE >= UMIDADE_MIN[modo]+35) {
             irrigacao = false;
         }
+        irrigacao ? set_buzzer_tone(BUZZER_B, 440, 8) : stop_pwm(BUZZER_B); 
         // mostra na matriz de led o modo de operação
         modo_de_operacao();
         // aguarda 100ms antes de rodar o loop novamente
@@ -224,11 +221,11 @@ void init_pwm(uint gpio, float clkdiv, uint wrap) {
     pwm_set_wrap(slice_num, wrap);
     pwm_set_enabled(slice_num, true);
 }
-void set_buzzer_tone(uint gpio, uint freq) {
+void set_buzzer_tone(uint gpio, uint freq, uint volume) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
     uint top = 1000000 / freq;            // Calcula o TOP para a frequência desejada
     pwm_set_wrap(slice_num, top);
-    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / 2); // 50% duty cycle
+    pwm_set_chan_level(slice_num, pwm_gpio_to_channel(gpio), top / volume); // 50% duty cycle
 }
 void stop_pwm(uint gpio) {
     uint slice_num = pwm_gpio_to_slice_num(gpio);
@@ -306,6 +303,10 @@ void buttons_callback(uint gpio, uint32_t events){
     } else if (gpio == BUTTON_B && (current_time - button_b_last_time) > DEBOUNCE_DELAY) {
         button_b_last_time = current_time;
         stop_pwm(BLUE_LED);
+        stop_pwm(GREEN_LED);
+        stop_pwm(RED_LED);
+        stop_pwm(BUZZER_A);
+        stop_pwm(BUZZER_B);
         irrigacao = false; // Reseta o estado da irrigação
     }
 }
@@ -315,8 +316,7 @@ void alarm() {
         alarme_inicio = to_ms_since_boot(get_absolute_time());
 
         // Ativa o buzzer e os LEDs
-        set_buzzer_tone(BUZZER_A, 1000);
-        set_buzzer_tone(BUZZER_B, 1000);
+        set_buzzer_tone(BUZZER_A, 1000, 2);
         set_led_pulse(RED_LED, 100);
         set_led_pulse(GREEN_LED, 100);
         set_led_pulse(BLUE_LED, 100);
